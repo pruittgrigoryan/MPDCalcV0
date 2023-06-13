@@ -1,0 +1,237 @@
+import math
+import csv
+import pandas
+from flask import Flask, render_template, request
+
+
+
+
+def ECD_Calc(TVD, MW, FL):
+  ECD = round(((0.052 * MW * TVD) + FL) / (0.052 * TVD), 2)
+  return (ECD)
+
+
+print(ECD_Calc(10000, 10.8, 500))
+
+
+def PUMP_OUTPUT_Calc(Liner_Size, Stroke_Length, PEfficiency):
+  Pump_Output = ((0.000243 * (Liner_Size**2) * Stroke_Length) *
+                 (PEfficiency / 100))
+  return (Pump_Output)
+
+
+print(PUMP_OUTPUT_Calc(4.75, 12, 95))
+
+
+def RHEO_Calc(MW, F3, F6, F300, F600):
+  ty = (2 * F3 - F6)
+  n = (3.32 * math.log10((F600 - ty) / (F300 - ty)))
+  k = ((F300 - ty) / (511**n))
+  return (ty, n, k)
+
+
+print(RHEO_Calc(15.8, 4, 5, 47, 83))
+
+
+def VOL_Calc(OD, ID):
+  vol = ((OD**2 - ID**2) / 1029.4)
+  return (vol)
+
+
+print(VOL_Calc(5, 4))
+
+
+def FL_Calc(objFluid, objWell, pumpRate, nAnchor): 
+  print("\nBit Depth:", objWell.bitDepth)
+  frictionPressureLoss = 0
+
+  shearRateBx = ((1.0678**(2 / objFluid.n) / (objFluid.n * 1.0678**2)) *
+                 ((1.0678**2 - 1) / (1.0678**(2 / objFluid.n) - 1)))
+  geometryFactor = 1
+  geometryShearCorrection = (((3 - geometryFactor) * objFluid.n + 1) / (
+    (4 - geometryFactor) * objFluid.n)) * (1 + geometryFactor / 2)
+  combinedShearCorrection = geometryShearCorrection / shearRateBx
+  criticalReynoldsNumber = 3470 - 1370 * objFluid.n
+  BM14 = (math.log10(objFluid.n) + 3.93) / 50
+  BM15 = (1.75 - math.log10(objFluid.n)) / 7
+
+  total_len = 0
+  for i in range(len(objWell.bha)):
+    if objWell.bha[i].depth - objWell.bha[i].length > nAnchor: continue
+
+    #calc total lengths
+    nLengthOH = max(
+      0,
+      min(objWell.bha[i].length,
+          objWell.bha[i].depth - objWell.liner[0].depth))
+    nLengthCsg = max(
+      0, min(objWell.bha[i].length, objWell.bha[i].length - nLengthOH))
+
+    #adjust for anchor
+    nLengthOH -= max(0, objWell.bha[i].depth - nAnchor)
+    if nAnchor <= objWell.liner[0].depth: nLengthOH = 0
+    nLengthCsg -= max(0, objWell.liner[0].depth - nAnchor)
+
+    total_len += nLengthOH + nLengthCsg
+    print(objWell.bha[i].description, "Length in OH:", nLengthOH)
+    print(objWell.bha[i].description, "Length in Liner:", nLengthCsg)
+    print(objWell.bha[i].description, "Depth:", objWell.bha[i].depth)
+    print("")
+
+    #open hole calcs
+    annularVelocity = (24.51 * pumpRate /
+                       (objWell.holeSize**2 - objWell.bha[i].OD**2))
+    dhyd = objWell.holeSize - objWell.bha[i].OD
+    shearRateWallgammaw = 1.6 * combinedShearCorrection * annularVelocity / dhyd
+    shearStressWalltauv = (
+      (4 - geometryFactor) / (3 - geometryFactor)
+    )**objFluid.n * objFluid.ty + objFluid.k * shearRateWallgammaw**objFluid.n
+    shearStressWalltauw = 1.066 * shearStressWalltauv
+    reynoldsNumber = objFluid.mw * annularVelocity**2 / (19.36 *
+                                                         shearStressWalltauw)
+    frictionLaminar = 16 / reynoldsNumber
+    frictionTransitionalFlow = 16 * reynoldsNumber / criticalReynoldsNumber**2
+    frictionTurbulantFlow = BM14 / reynoldsNumber**BM15
+    intermediateFriction = (frictionTransitionalFlow**-8 +
+                            frictionTurbulantFlow**-8)**(-1 / 8)
+    generalFriction = (intermediateFriction**12 + frictionLaminar**12)**(1 /
+                                                                         12)
+    frictionPressureLoss += 1.076 * objFluid.mw * annularVelocity**2 * generalFriction * nLengthOH / (
+      10**5 * dhyd)
+
+    #csg calcs
+    annularVelocity = (24.51 * pumpRate /
+                       (objWell.liner[0].ID**2 - objWell.bha[i].OD**2))
+    dhyd = objWell.liner[0].ID - objWell.bha[i].OD
+    shearRateWallgammaw = 1.6 * combinedShearCorrection * annularVelocity / dhyd
+    shearStressWalltauv = (
+      (4 - geometryFactor) / (3 - geometryFactor)
+    )**objFluid.n * objFluid.ty + objFluid.k * shearRateWallgammaw**objFluid.n
+    shearStressWalltauw = 1.066 * shearStressWalltauv
+    reynoldsNumber = objFluid.mw * annularVelocity**2 / (19.36 *
+                                                         shearStressWalltauw)
+    frictionLaminar = 16 / reynoldsNumber
+    frictionTransitionalFlow = 16 * reynoldsNumber / criticalReynoldsNumber**2
+    frictionTurbulantFlow = BM14 / reynoldsNumber**BM15
+    intermediateFriction = (frictionTransitionalFlow**-8 +
+                            frictionTurbulantFlow**-8)**(-1 / 8)
+    generalFriction = (intermediateFriction**12 + frictionLaminar**12)**(1 /
+                                                                         12)
+    frictionPressureLoss += 1.076 * objFluid.mw * annularVelocity**2 * generalFriction * nLengthCsg / (
+      10**5 * dhyd)
+
+  print("Sum of pipe counted for anchor:", total_len)
+  return (frictionPressureLoss)
+
+
+# Classes - fluid, well and bha
+class cFluid:
+
+  def __init__(self, mw, n600, n300, n6, n3):
+    #class attributes
+    self.mw = mw
+    self.n600 = n600
+    self.n300 = n300
+    self.n6 = n6
+    self.n3 = n3
+    self.ty = 2 * self.n3 - self.n6
+    self.n = 3.32 * math.log10((self.n600 - self.ty) / (self.n300 - self.ty))
+    self.k = (self.n300 - self.ty) / 511**self.n
+
+
+class cBha:
+
+  def __init__(self, sDesc, nID, nOD, nLength):
+    #class attributes
+    self.description = sDesc
+    self.ID = nID
+    self.OD = nOD
+    self.length = nLength
+    self.depth = 0
+
+
+class cLiner:
+
+  def __init__(self, sDesc, nID, nDepth):
+    #class attributes
+    self.description = sDesc
+    self.ID = nID
+    self.depth = nDepth
+
+
+class cWell:
+
+  def __init__(self, depth, holeSize):
+    #class attributes
+    self.wellDepth = depth
+    self.holeSize = holeSize
+    self.bitDepth = depth
+    self.liner = []  #array list of liner objects
+    self.bha = []  #array list of cBha objects
+    self.fluid = []  #array list of fluid objects
+
+  def SetBitDepth(self, nDepth):  #function updates depth of each bha component
+    self.bitDepth = nDepth
+    curr_depth = nDepth
+    for i in range(len(self.bha)):
+      self.bha[i].depth = curr_depth
+      curr_depth -= self.bha[
+        i].length  #starts at bit and subtracts each segment length
+      #this will adjust dp length automatically
+      if self.bha[i].length > self.bha[i].depth:
+        self.bha[i].length = self.bha[i].depth
+
+
+# End of classes
+
+#**************************************#
+#Initialize the well
+
+anchor_point = 19788
+tvd = 12540
+hole_depth = 19788
+shoe_depth = 11418
+
+drillString = cBha("Drillpipe", 3.826, 4.5, hole_depth)
+NMDC = cBha("NMDC", 2.5, 5, 12)
+motor = cBha("Mud Motor", 2.5, 5.0, 30)
+activeMud = cFluid(15.8, 83, 47, 5, 4)
+liner1 = cLiner("Casing", 6.875, shoe_depth)
+testWell = cWell(hole_depth, 6.75)
+
+#add bha, fluid and liner to the well
+testWell.liner.append(liner1)
+testWell.bha.append(motor)  #in order as you would pick them up TIH
+testWell.bha.append(NMDC)
+testWell.bha.append(drillString)
+testWell.fluid.append(activeMud)
+
+#lastly set bit depth, this will update depth of each bha
+testWell.SetBitDepth(11440)
+
+pLoss = FL_Calc(activeMud, testWell, 250, anchor_point)
+
+print("\nTest Well:")
+print("Mud Weight:", activeMud.mw)
+print("Bit Depth:", testWell.bitDepth)
+print("Flow Rate: 250")
+print("TVD @ bit:", tvd)
+print("Hole ID:", testWell.holeSize)
+print("Liner ID:", testWell.liner[0].ID)
+print("Shoe:", testWell.liner[0].depth)
+print("Anchor:", anchor_point)
+print("ECD @ AP:", ECD_Calc(tvd, activeMud.mw, pLoss))
+'''
+def BHAuse(BD):
+  for i in BD:
+    
+  
+
+def TESTVOL(TVD, ShoeDepth, CSGDiam, OHDiam, BD):
+  TotalVol = (ShoeDepth*CSGDiam) + (OHDiam*(TVD-ShoeDepth))
+  AnnVol = ()
+  PipeDisp = ()
+  PipeVol = ()
+  if BD <= 
+  
+'''
